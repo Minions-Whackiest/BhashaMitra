@@ -13,6 +13,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
+import axios from 'axios'; // Import Axios for API calls
 
 interface Message {
   id: string;
@@ -51,20 +52,25 @@ export default function AIAssistant() {
       isUser: true,
     };
 
-    setMessages(prev => [...prev, newMessage]);
+    setMessages((prev: Message[]) => [...prev, newMessage]);
     setInputText('');
     setIsLoading(true);
 
     try {
-      // Simulate AI response
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const response = await axios.post('http://127.0.0.1:5000/translate', { text: inputText, target_lang: 'en' });
       const aiResponse: Message = {
         id: (Date.now() + 1).toString(),
         type: 'text',
-        content: 'This is a simulated AI response.',
+        content: response.data.translated_text || 'No response from AI.',
         isUser: false,
       };
-      setMessages(prev => [...prev, aiResponse]);
+      setMessages((prev: Message[]) => [...prev, aiResponse]);
+    } catch (error) {
+      console.error(error);
+      setMessages((prev: Message[]) => [
+        ...prev,
+        { id: Date.now().toString(), type: 'text', content: 'Error processing the request', isUser: false },
+      ]);
     } finally {
       setIsLoading(false);
     }
@@ -76,11 +82,11 @@ export default function AIAssistant() {
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
-      
+
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
-      
+
       setRecording(recording);
       setIsRecording(true);
     } catch (err) {
@@ -102,7 +108,38 @@ export default function AIAssistant() {
           content: uri,
           isUser: true,
         };
-        setMessages(prev => [...prev, newMessage]);
+        setMessages((prev: Message[]) => [...prev, newMessage]);
+
+        // Send the recorded audio to the backend for transcription
+        setIsLoading(true);
+        try {
+          const formData = new FormData();
+          const response = await fetch(uri);
+          const blob = await response.blob();
+          formData.append('audio', blob, 'audio.wav');
+
+          const transcribeResponse = await axios.post('http://127.0.0.1:5000/transcribe', formData, {
+            headers: {
+              'Content-Type': 'multipart/form-data',
+            },
+          });
+
+          const aiResponse: Message = {
+            id: (Date.now() + 1).toString(),
+            type: 'text',
+            content: transcribeResponse.data.transcription || 'No transcription available.',
+            isUser: false,
+          };
+          setMessages(prev => [...prev, aiResponse]);
+        } catch (error) {
+          console.error(error);
+          setMessages(prev => [
+            ...prev,
+            { id: Date.now().toString(), type: 'text', content: 'Error processing the audio', isUser: false },
+          ]);
+        } finally {
+          setIsLoading(false);
+        }
       }
     } catch (err) {
       console.error('Failed to stop recording', err);
@@ -133,7 +170,7 @@ export default function AIAssistant() {
     const isUser = message.isUser;
     return (
       <View
-        key={message.id}
+        key={message.id} // Ensures unique keys
         style={[
           styles.messageContainer,
           isUser ? styles.userMessage : styles.botMessage,
@@ -165,19 +202,19 @@ export default function AIAssistant() {
           </View>
         )}
       </ScrollView>
-      
+
       <View style={styles.inputContainer}>
         <TouchableOpacity onPress={pickImage} style={styles.iconButton}>
           <Ionicons name="image" size={24} color="#FFFFFF" />
         </TouchableOpacity>
-        
+
         <TouchableOpacity
           onPress={isRecording ? stopRecording : startRecording}
           style={[styles.iconButton, isRecording && styles.recordingButton]}
         >
-          <Ionicons name={isRecording ? "stop" : "mic"} size={24} color="#FFFFFF" />
+          <Ionicons name={isRecording ? 'stop' : 'mic'} size={24} color="#FFFFFF" />
         </TouchableOpacity>
-        
+
         <TextInput
           style={styles.input}
           value={inputText}
@@ -185,7 +222,7 @@ export default function AIAssistant() {
           placeholder="Type a message..."
           placeholderTextColor="#666666"
         />
-        
+
         <TouchableOpacity onPress={handleSendMessage} style={styles.sendButton}>
           <Ionicons name="send" size={24} color="#FFFFFF" />
         </TouchableOpacity>

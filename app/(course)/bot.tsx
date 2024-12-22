@@ -11,9 +11,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
-import axios from 'axios'; // Import Axios for API calls
+import axios from 'axios';
 
 interface Message {
   id: string;
@@ -26,17 +25,14 @@ export default function AIAssistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Request permissions on component mount
   React.useEffect(() => {
     (async () => {
       if (Platform.OS !== 'web') {
         const { status: imageStatus } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        const { status: audioStatus } = await Audio.requestPermissionsAsync();
-        if (imageStatus !== 'granted' || audioStatus !== 'granted') {
-          alert('Sorry, we need camera roll and audio permissions to make this work!');
+        if (imageStatus !== 'granted') {
+          alert('Sorry, we need camera roll permissions to make this work!');
         }
       }
     })();
@@ -57,11 +53,14 @@ export default function AIAssistant() {
     setIsLoading(true);
 
     try {
-      const response = await axios.post('http://127.0.0.1:5000/translate', { text: inputText, target_lang: 'en' });
+      const response = await axios.post('http://127.0.0.1:5000/message', { type: 'text', // Specifies the type of message
+        content: inputText, // Contains the text content of the message
+        isUser: true, // Indicates this is a user message
+         });
       const aiResponse: Message = {
         id: (Date.now() + 1).toString(),
         type: 'text',
-        content: response.data.translated_text || 'No response from AI.',
+        content: response.data.response || 'No response from AI.',
         isUser: false,
       };
       setMessages((prev: Message[]) => [...prev, aiResponse]);
@@ -78,74 +77,66 @@ export default function AIAssistant() {
 
   const startRecording = async () => {
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-
-      setRecording(recording);
       setIsRecording(true);
-    } catch (err) {
-      console.error('Failed to start recording', err);
+      setIsLoading(true);
+  
+      // Step 1: Make a POST request to the `/record` endpoint
+      const recordResponse = await axios.post('http://127.0.0.1:5000/record');
+  
+      const audioUrl = recordResponse.data.audio_url;
+      const newAudioMessage: Message = {
+        id: Date.now().toString(),
+        type: 'audio',
+        content: audioUrl || 'No audio recorded.',
+        isUser: true,
+      };
+      setMessages((prev: Message[]) => [...prev, newAudioMessage]);
+  
+      // Step 2: Send the audio file to `/transcribe`
+      const formData = new FormData();
+      const response = await fetch(audioUrl);
+      const blob = await response.blob();
+      formData.append('audio', blob, 'audio.mp3');
+  
+      const transcribeResponse = await axios.post('http://127.0.0.1:5000/transcribe', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+  
+      const transcription = transcribeResponse.data.full_transcription || 'No transcription available.';
+      const newTextMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: 'text',
+        content: transcription,
+        isUser: false,
+      };
+      setMessages((prev: Message[]) => [...prev, newTextMessage]);
+  
+      // Step 3: Send the transcribed text to `/translate`
+      const translateResponse = await axios.post('http://127.0.0.1:5000/translate', { type: 'text', // Specifies the type of message
+        content: inputText, // Contains the text content of the message
+        isUser: true, // Indicates this is a user message
+         });
+  
+      const translatedText = translateResponse.data.response || 'No translation available.';
+      const newTranslatedMessage: Message = {
+        id: (Date.now() + 2).toString(),
+        type: 'text',
+        content: translatedText,
+        isUser: false,
+      };
+      setMessages((prev: Message[]) => [...prev, newTranslatedMessage]);
+    } catch (error) {
+      console.error('Error processing audio:', error);
+      setMessages((prev: Message[]) => [
+        ...prev,
+        { id: Date.now().toString(), type: 'text', content: 'Error processing audio', isUser: false },
+      ]);
+    } finally {
+      setIsRecording(false);
+      setIsLoading(false);
     }
   };
-
-  const stopRecording = async () => {
-    if (!recording) return;
-
-    setIsRecording(false);
-    try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      if (uri) {
-        const newMessage: Message = {
-          id: Date.now().toString(),
-          type: 'audio',
-          content: uri,
-          isUser: true,
-        };
-        setMessages((prev: Message[]) => [...prev, newMessage]);
-
-        // Send the recorded audio to the backend for transcription
-        setIsLoading(true);
-        try {
-          const formData = new FormData();
-          const response = await fetch(uri);
-          const blob = await response.blob();
-          formData.append('audio', blob, 'audio.wav');
-
-          const transcribeResponse = await axios.post('http://127.0.0.1:5000/transcribe', formData, {
-            headers: {
-              'Content-Type': 'multipart/form-data',
-            },
-          });
-
-          const aiResponse: Message = {
-            id: (Date.now() + 1).toString(),
-            type: 'text',
-            content: transcribeResponse.data.transcription || 'No transcription available.',
-            isUser: false,
-          };
-          setMessages(prev => [...prev, aiResponse]);
-        } catch (error) {
-          console.error(error);
-          setMessages(prev => [
-            ...prev,
-            { id: Date.now().toString(), type: 'text', content: 'Error processing the audio', isUser: false },
-          ]);
-        } finally {
-          setIsLoading(false);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to stop recording', err);
-    }
-    setRecording(null);
-  };
+  
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -170,7 +161,7 @@ export default function AIAssistant() {
     const isUser = message.isUser;
     return (
       <View
-        key={message.id} // Ensures unique keys
+        key={message.id}
         style={[
           styles.messageContainer,
           isUser ? styles.userMessage : styles.botMessage,
@@ -209,7 +200,7 @@ export default function AIAssistant() {
         </TouchableOpacity>
 
         <TouchableOpacity
-          onPress={isRecording ? stopRecording : startRecording}
+          onPress={startRecording}
           style={[styles.iconButton, isRecording && styles.recordingButton]}
         >
           <Ionicons name={isRecording ? 'stop' : 'mic'} size={24} color="#FFFFFF" />

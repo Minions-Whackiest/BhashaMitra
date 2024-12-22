@@ -6,8 +6,10 @@ import whisperx
 import torch
 from googletrans import Translator
 import os
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 
 # Directory to store the audio files temporarily
 AUDIO_STORAGE_DIR = "audio_files"
@@ -17,7 +19,7 @@ os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
 def record_audio_from_microphone(duration=10, sample_rate=16000):
     audio_data = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype="int16")
     sd.wait()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav", dir=AUDIO_STORAGE_DIR) as temp_audio_file:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3", dir=AUDIO_STORAGE_DIR) as temp_audio_file:
         with wave.open(temp_audio_file.name, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
@@ -160,4 +162,4 @@ def handle_message():
 
 # Run the Flask app
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, threaded=True)

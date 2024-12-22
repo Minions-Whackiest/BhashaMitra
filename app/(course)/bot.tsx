@@ -9,6 +9,7 @@ import {
   ScrollView,
   Platform,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,11 +22,30 @@ interface Message {
   isUser: boolean;
 }
 
+type Language = 'kannada' | 'telugu' | 'tamil' | 'hindi';
+
 export default function AIAssistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState<Language>('kannada');
+  const [showLanguageModal, setShowLanguageModal] = useState(false);
+
+  const targetLang = React.useMemo(() => {
+    switch (selectedLanguage) {
+      case 'kannada':
+        return 'kn';
+      case 'telugu':
+        return 'te';
+      case 'tamil':
+        return 'ta';
+      case 'hindi':
+        return 'hi';
+      default:
+        return 'kn';
+    }
+  }, [selectedLanguage]);
 
   React.useEffect(() => {
     (async () => {
@@ -51,12 +71,17 @@ export default function AIAssistant() {
     setMessages((prev: Message[]) => [...prev, newMessage]);
     setInputText('');
     setIsLoading(true);
+  
+    
 
     try {
-      const response = await axios.post('http://127.0.0.1:5000/message', { type: 'text', // Specifies the type of message
-        content: inputText, // Contains the text content of the message
-        isUser: true, // Indicates this is a user message
-         });
+
+      const response = await axios.post('http://127.0.0.1:5000/message', {
+      type: 'text',
+      content: inputText,
+      isUser: true,
+      targetLang: targetLang,
+      });
       const aiResponse: Message = {
         id: (Date.now() + 1).toString(),
         type: 'text',
@@ -77,65 +102,81 @@ export default function AIAssistant() {
 
   const startRecording = async () => {
     try {
-      setIsRecording(true);
-      setIsLoading(true);
+        setIsRecording(true);
+        setIsLoading(true);
   
-      // Step 1: Make a POST request to the `/record` endpoint
-      const recordResponse = await axios.post('http://127.0.0.1:5000/record');
+        // Single request to record and start processing
+        const recordResponse = await axios.post('http://127.0.0.1:5000/record', {
+          targetLang: targetLang,
+        });
+        const taskId = recordResponse.data.task_id;
+
+        const newAudioMessage: Message = {
+            id: Date.now().toString(),
+            type: 'audio',
+            content: 'Audio recorded',
+            isUser: true,
+        };
+        setMessages((prev: Message[]) => [...prev, newAudioMessage]);
+
+        const newTextMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            type: 'text',
+            content: 'Transcription in progress...',
+            isUser: false,
+        };
+        setMessages((prev: Message[]) => [...prev, newTextMessage]);
+      
+        // Status checking remains the same
+        const checkStatus = async () => {
+            try {
+                const statusResponse = await axios.get(`http://127.0.0.1:5000/check_status/${taskId}`);
+                if (statusResponse.data.status === 'completed') {
+                  const transcription = statusResponse.data.transcription;
+                  const translation = statusResponse.data.translation || 'No translation available.';
+                  // Update the transcription message
+                  setMessages((prev: Message[]) =>
+                    prev.map(msg =>
+                      msg.id === newTextMessage.id ? { ...msg, content: transcription } : msg
+                    )
+                  );
+                  // Create a separate message entry for translation
+                  const newTranslationMessage: Message = {
+                    id: (Date.now() + 2).toString(),
+                    type: 'text',
+                    content: translation,
+                    isUser: false,
+                  };
+                  setMessages((prev: Message[]) => [...prev, newTranslationMessage]);
+                  clearInterval(intervalId);
+                  } else if (statusResponse.data.status === 'failed') {
+                    const transcription = 'Transcription failed.';
+                    setMessages((prev: Message[]) =>
+                      prev.map(msg =>
+                        msg.id === newTextMessage.id ? { ...msg, content: transcription } : msg
+                      )
+                    );
+                    clearInterval(intervalId);
+                  }
+            } catch (error) {
+                console.error('Error checking transcription status:', error);
+                clearInterval(intervalId);
+            }
+        };
+      
+        const intervalId = setInterval(checkStatus, 3000);
   
-      const audioUrl = recordResponse.data.audio_url;
-      const newAudioMessage: Message = {
-        id: Date.now().toString(),
-        type: 'audio',
-        content: audioUrl || 'No audio recorded.',
-        isUser: true,
-      };
-      setMessages((prev: Message[]) => [...prev, newAudioMessage]);
-  
-      // Step 2: Send the audio file to `/transcribe`
-      const formData = new FormData();
-      const response = await fetch(audioUrl);
-      const blob = await response.blob();
-      formData.append('audio', blob, 'audio.mp3');
-  
-      const transcribeResponse = await axios.post('http://127.0.0.1:5000/transcribe', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-  
-      const transcription = transcribeResponse.data.full_transcription || 'No transcription available.';
-      const newTextMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        type: 'text',
-        content: transcription,
-        isUser: false,
-      };
-      setMessages((prev: Message[]) => [...prev, newTextMessage]);
-  
-      // Step 3: Send the transcribed text to `/translate`
-      const translateResponse = await axios.post('http://127.0.0.1:5000/translate', { type: 'text', // Specifies the type of message
-        content: inputText, // Contains the text content of the message
-        isUser: true, // Indicates this is a user message
-         });
-  
-      const translatedText = translateResponse.data.response || 'No translation available.';
-      const newTranslatedMessage: Message = {
-        id: (Date.now() + 2).toString(),
-        type: 'text',
-        content: translatedText,
-        isUser: false,
-      };
-      setMessages((prev: Message[]) => [...prev, newTranslatedMessage]);
     } catch (error) {
-      console.error('Error processing audio:', error);
-      setMessages((prev: Message[]) => [
-        ...prev,
-        { id: Date.now().toString(), type: 'text', content: 'Error processing audio', isUser: false },
-      ]);
+        console.error('Error processing audio:', error);
+        setMessages((prev: Message[]) => [
+            ...prev,
+            { id: Date.now().toString(), type: 'text', content: 'Error processing audio', isUser: false },
+        ]);
     } finally {
-      setIsRecording(false);
-      setIsLoading(false);
+        setIsRecording(false);
+        setIsLoading(false);
     }
-  };
+};
   
 
   const pickImage = async () => {
@@ -183,6 +224,38 @@ export default function AIAssistant() {
     );
   };
 
+  const renderLanguageModal = () => (
+    <Modal
+      visible={showLanguageModal}
+      transparent={true}
+      animationType="slide"
+    >
+      <View style={styles.modalContainer}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle}>Select Language</Text>
+          {(['kannada', 'telugu', 'tamil', 'hindi'] as Language[]).map((lang) => (
+            <TouchableOpacity
+              key={lang}
+              style={styles.languageOption}
+              onPress={() => {
+                setSelectedLanguage(lang);
+                setShowLanguageModal(false);
+              }}
+            >
+              <Text style={styles.languageOptionText}>{lang.charAt(0).toUpperCase() + lang.slice(1)}</Text>
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity
+            style={styles.closeButton}
+            onPress={() => setShowLanguageModal(false)}
+          >
+            <Text style={styles.closeButtonText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
   return (
     <View style={styles.container}>
       <ScrollView style={styles.messagesContainer}>
@@ -218,6 +291,18 @@ export default function AIAssistant() {
           <Ionicons name="send" size={24} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
+
+      <TouchableOpacity
+        style={styles.languageButton}
+        onPress={() => setShowLanguageModal(true)}
+      >
+        <Ionicons name="language" size={24} color="#FFFFFF" />
+        <Text style={styles.languageButtonText}>
+          {selectedLanguage.charAt(0).toUpperCase() + selectedLanguage.slice(1)}
+        </Text>
+      </TouchableOpacity>
+
+      {renderLanguageModal()}
     </View>
   );
 }
@@ -292,4 +377,59 @@ const styles = StyleSheet.create({
     padding: 16,
     alignItems: 'center',
   },
+  languageButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#363636',
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#2B2B2B',
+  },
+  languageButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    marginLeft: 8,
+  },
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  modalContent: {
+    backgroundColor: '#2B2B2B',
+    borderRadius: 12,
+    padding: 20,
+    width: '80%',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  languageOption: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#363636',
+  },
+  languageOptionText: {
+    fontSize: 18,
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  closeButton: {
+    marginTop: 16,
+    padding: 12,
+    backgroundColor: '#363636',
+    borderRadius: 8,
+  },
+  closeButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    textAlign: 'center',
+  },
 });
+

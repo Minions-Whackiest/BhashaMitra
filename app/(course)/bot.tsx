@@ -12,8 +12,8 @@ import {
   Modal,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
+import axios from 'axios';
 
 interface Message {
   id: string;
@@ -28,19 +28,31 @@ export default function AIAssistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState<Language>('kannada');
   const [showLanguageModal, setShowLanguageModal] = useState(false);
 
-  // Request permissions on component mount
+  const targetLang = React.useMemo(() => {
+    switch (selectedLanguage) {
+      case 'kannada':
+        return 'kn';
+      case 'telugu':
+        return 'te';
+      case 'tamil':
+        return 'ta';
+      case 'hindi':
+        return 'hi';
+      default:
+        return 'kn';
+    }
+  }, [selectedLanguage]);
+
   React.useEffect(() => {
     (async () => {
       if (Platform.OS !== 'web') {
         const { status: imageStatus } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        const { status: audioStatus } = await Audio.requestPermissionsAsync();
-        if (imageStatus !== 'granted' || audioStatus !== 'granted') {
-          alert('Sorry, we need camera roll and audio permissions to make this work!');
+        if (imageStatus !== 'granted') {
+          alert('Sorry, we need camera roll permissions to make this work!');
         }
       }
     })();
@@ -56,20 +68,33 @@ export default function AIAssistant() {
       isUser: true,
     };
 
-    setMessages(prev => [...prev, newMessage]);
+    setMessages((prev: Message[]) => [...prev, newMessage]);
     setInputText('');
     setIsLoading(true);
+  
+    
 
     try {
-      // Simulate AI response
-      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const response = await axios.post('http://127.0.0.1:5000/message', {
+      type: 'text',
+      content: inputText,
+      isUser: true,
+      targetLang: targetLang,
+      });
       const aiResponse: Message = {
         id: (Date.now() + 1).toString(),
         type: 'text',
-        content: `This is a simulated AI response in ${selectedLanguage}.`,
+        content: response.data.response || 'No response from AI.',
         isUser: false,
       };
-      setMessages(prev => [...prev, aiResponse]);
+      setMessages((prev: Message[]) => [...prev, aiResponse]);
+    } catch (error) {
+      console.error(error);
+      setMessages((prev: Message[]) => [
+        ...prev,
+        { id: Date.now().toString(), type: 'text', content: 'Error processing the request', isUser: false },
+      ]);
     } finally {
       setIsLoading(false);
     }
@@ -77,43 +102,82 @@ export default function AIAssistant() {
 
   const startRecording = async () => {
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-      
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      
-      setRecording(recording);
-      setIsRecording(true);
-    } catch (err) {
-      console.error('Failed to start recording', err);
-    }
-  };
+        setIsRecording(true);
+        setIsLoading(true);
+  
+        // Single request to record and start processing
+        const recordResponse = await axios.post('http://127.0.0.1:5000/record', {
+          targetLang: targetLang,
+        });
+        const taskId = recordResponse.data.task_id;
 
-  const stopRecording = async () => {
-    if (!recording) return;
-
-    setIsRecording(false);
-    try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      if (uri) {
-        const newMessage: Message = {
-          id: Date.now().toString(),
-          type: 'audio',
-          content: uri,
-          isUser: true,
+        const newAudioMessage: Message = {
+            id: Date.now().toString(),
+            type: 'audio',
+            content: 'Audio recorded',
+            isUser: true,
         };
-        setMessages(prev => [...prev, newMessage]);
-      }
-    } catch (err) {
-      console.error('Failed to stop recording', err);
+        setMessages((prev: Message[]) => [...prev, newAudioMessage]);
+
+        const newTextMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            type: 'text',
+            content: 'Transcription in progress...',
+            isUser: false,
+        };
+        setMessages((prev: Message[]) => [...prev, newTextMessage]);
+      
+        // Status checking remains the same
+        const checkStatus = async () => {
+            try {
+                const statusResponse = await axios.get(`http://127.0.0.1:5000/check_status/${taskId}`);
+                if (statusResponse.data.status === 'completed') {
+                  const transcription = statusResponse.data.transcription;
+                  const translation = statusResponse.data.translation || 'No translation available.';
+                  // Update the transcription message
+                  setMessages((prev: Message[]) =>
+                    prev.map(msg =>
+                      msg.id === newTextMessage.id ? { ...msg, content: transcription } : msg
+                    )
+                  );
+                  // Create a separate message entry for translation
+                  const newTranslationMessage: Message = {
+                    id: (Date.now() + 2).toString(),
+                    type: 'text',
+                    content: translation,
+                    isUser: false,
+                  };
+                  setMessages((prev: Message[]) => [...prev, newTranslationMessage]);
+                  clearInterval(intervalId);
+                  } else if (statusResponse.data.status === 'failed') {
+                    const transcription = 'Transcription failed.';
+                    setMessages((prev: Message[]) =>
+                      prev.map(msg =>
+                        msg.id === newTextMessage.id ? { ...msg, content: transcription } : msg
+                      )
+                    );
+                    clearInterval(intervalId);
+                  }
+            } catch (error) {
+                console.error('Error checking transcription status:', error);
+                clearInterval(intervalId);
+            }
+        };
+      
+        const intervalId = setInterval(checkStatus, 3000);
+  
+    } catch (error) {
+        console.error('Error processing audio:', error);
+        setMessages((prev: Message[]) => [
+            ...prev,
+            { id: Date.now().toString(), type: 'text', content: 'Error processing audio', isUser: false },
+        ]);
+    } finally {
+        setIsRecording(false);
+        setIsLoading(false);
     }
-    setRecording(null);
-  };
+};
+  
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -202,19 +266,19 @@ export default function AIAssistant() {
           </View>
         )}
       </ScrollView>
-      
+
       <View style={styles.inputContainer}>
         <TouchableOpacity onPress={pickImage} style={styles.iconButton}>
           <Ionicons name="image" size={24} color="#FFFFFF" />
         </TouchableOpacity>
-        
+
         <TouchableOpacity
-          onPress={isRecording ? stopRecording : startRecording}
+          onPress={startRecording}
           style={[styles.iconButton, isRecording && styles.recordingButton]}
         >
-          <Ionicons name={isRecording ? "stop" : "mic"} size={24} color="#FFFFFF" />
+          <Ionicons name={isRecording ? 'stop' : 'mic'} size={24} color="#FFFFFF" />
         </TouchableOpacity>
-        
+
         <TextInput
           style={styles.input}
           value={inputText}
@@ -222,7 +286,7 @@ export default function AIAssistant() {
           placeholder="Type a message..."
           placeholderTextColor="#666666"
         />
-        
+
         <TouchableOpacity onPress={handleSendMessage} style={styles.sendButton}>
           <Ionicons name="send" size={24} color="#FFFFFF" />
         </TouchableOpacity>
@@ -368,4 +432,3 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 });
-
